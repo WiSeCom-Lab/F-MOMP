@@ -26,7 +26,6 @@ class CommSysInfo:
         #* Transmitted signal, precoders/combiners, channel geo information
         self.to_data_trajs()
         self.init_communication() # design transimitted signals, get noise level
-        # self.design_codebook(load=self.new_coders) # Though using random precoding, the codes are fixed for all the channels in the dataset; it gives self.F_UE, self.F_AP, and self.LLinv (for whitenting noises)
         
         
         
@@ -49,13 +48,7 @@ class CommSysInfo:
             chan_ids = np.arange(sim_id * 4, (sim_id+1) * 4)
             powers = [np.max(self.Rays[ii].ray_info[:, 2]) for ii in chan_ids]
             self.p_max_chans[sim_id, :] = np.argsort(powers)[-2:][::-1]
-        # self.Traj_simIDs = {'arr0': np.arange(0,len(self.p_max_chans))[self.p_max_chans%4==0], 'arr2': np.arange(0,len(self.p_max_chans))[self.p_max_chans%4==2], 'arr1': np.arange(0,len(self.p_max_chans))[self.p_max_chans%4==1]}
 
-        # for arr_id in [0, 1,2]:
-        #     ky = f'arr{arr_id}'
-        #     absChan_ids = self.p_max_chans[self.Traj_simIDs[ky]]
-        #     sio.savemat(f'./data_trajs/{set}_sim{absChan_ids[0]//4}-{absChan_ids[-1]//4}_{ky}.mat', {'absChan_ids': absChan_ids, 'Rays': [self.Rays[ii] for ii in absChan_ids], 'num_inters': self.true_num_inters['Num_inters'][absChan_ids, :], 'UE_pos': np.array(self.UE_pos)[absChan_ids, :], 'AP_pos': self.AP_pos[0]})    
-        
     def load_trajInfo(self, traj_file=None):
         self.traj_info = sio.loadmat(traj_file)
         pass
@@ -140,34 +133,6 @@ class CommSysInfo:
         return F_cb_inOne, W_cb_inOne, F_M_colIds,  W_M_colIds, Linv_M
         
         
-        
-        # nDataStream=np.min([self.N_RF_UE, self.N_RF_AP])
-        # self.N_s = nDataStream
-        # num_FW_comb = np.sum([pair_mat.shape[1] for pair_mat in pair_mat_list])
-        # addNum_FW_comb = int(np.ceil(num_FW_comb/nDataStream)*nDataStream-num_FW_comb) # number of additional FW pairs to satisfy Ns transmissions
-        # if addNum_FW_comb != 0 :
-        #     FW_add_pair_ids = np.zeros([2, addNum_FW_comb])
-        #     FW_add_pair_ids[0, : ] = np.array(rdm.sample(range(int(pair_mat_list[-1][0, -1])), addNum_FW_comb)) # can't have same indexes in the last nDataStream 
-        #     FW_add_pair_ids[1, : ] = np.array(rdm.sample(range(int(pair_mat_list[-1][1, -1])), addNum_FW_comb))
-        #     pair_mat_list[-1] = np.concatenate([pair_mat_list[-1], FW_add_pair_ids], axis=1)
-            
-        # for cb_i in range(len(F_cb_list)):
-        #     pair_mat_list[cb_i] = np.concatenate([np.ones([1, pair_mat_list[cb_i].shape[1]])*cb_i, pair_mat_list[cb_i]], axis=0)
-        # pair_mats = np.concatenate(pair_mat_list, axis=1)
-        
-        # Linv = []
-        # for Linv_ii in range(pair_mats.shape[1]//nDataStream):
-        #     W_now = np.array([W_cb_list[int(pair_mats[0, ii])][:, int(pair_mats[2, ii])] for ii in np.arange(Linv_ii*nDataStream, (Linv_ii+1)*nDataStream)]).T
-        #     WHW = np.dot(W_now.conj().T, W_now)
-        #     try:
-        #         L_now = np.linalg.cholesky(WHW)
-        #     except:
-        #         L_now = np.eye(WHW.shape[1])
-        #     Linv_now = np.linalg.inv(L_now)
-        #     Linv.append(Linv_now) 
-        
-        
-        # print()
     
     def build_chan(self, rays, arr_id):
         paths_info = rays.ray_info # UL: 0 phase, 1 tau, 2 power, 3 doa_az, 4 doa_el, 5 dod_az, 6 dod_el
@@ -182,13 +147,6 @@ class CommSysInfo:
         tau_min = np.min(paths_info[:, 1])
         tdoa = paths_info[:, 1] - tau_min
         t_response = self.rcosfilter(num_taps=self.K, delays=tdoa, beta=0.2)
-        # plt.figure()
-        # plt.plot(np.arange(0,self.K)*1/self.B, t_response[:, 0], 'o-')
-        # plt.plot(np.arange(0,self.K)*1/self.B, t_response[:, 4], 's-')
-        # plt.plot(np.arange(0,self.K)*1/self.B, t_response[:, 8], 's-')
-        # plt.show()
-        
-        # response_time = self.filter.response(len(self.K), paths_info[:,1]-tau_min)
         complex_gain = np.sqrt(np.power(10, (paths_info[:, 2]-30)/10)) * np.exp(1j*phase)
         arrival_mat, departure_mat = [], []
         for path_id in range(len(tdoa)):
@@ -261,28 +219,6 @@ class CommSysInfo:
         
         return Y_M, whi_Y_M, whi_WH_M, F_M
         
-            
-            # #! TESTING For chan est purposes 
-            # # #* for original Phi Psi calculation
-            # # old_s = time.time()
-            # original_Phi_m = np.kron(IkronF_S.T, whi_WH)
-            # true_Psi = scipy.linalg.khatri_rao(self.true_chan_params['P_mat'], scipy.linalg.khatri_rao(self.true_chan_params['Amat_depart'].conj(), self.true_chan_params['Amat_arrive']))
-            # PhiPsi_m = original_Phi_m @ true_Psi
-            # # old_e = time.time()
-            # # print(f'old time collapse: {old_e-old_s}')
-            
-            # #* for fast PhiPsi_m calculation (my version of MOMP), consider N=3 using kron product of the x, y axis array response
-            # # new_st = time.time()
-            # dim_arrive = whi_WH @ self.true_chan_params['Amat_arrive']
-            # dim_depart = F_use.T @ self.true_chan_params['Amat_depart'].conj()
-            # S_reshape = np.concatenate([np.reshape(self.S_mat[:, ii:ii+1], [self.N_s, -1], order='F').T for ii in range(self.S_mat.shape[1])], axis=1).astype(np.complex128)
-            # dim_sig_t = self.true_chan_params['P_mat'].T @ S_reshape
-            # PhiPsi_fast = np.zeros([self.N_s*self.Q, len(self.true_chan_params['complex_gain'])]).astype(np.complex128)
-            # for ll in range(len(self.true_chan_params['complex_gain'])):
-            #     temp_col = [np.squeeze(dim_sig_t[ll:ll+1, qq*self.N_s:(qq+1)*self.N_s] @ dim_depart[:, ll:ll+1]) * dim_arrive[:, ll:ll+1] for qq in range(self.Q)]
-            #     PhiPsi_fast[:, ll:ll+1] = np.concatenate(temp_col, axis=0)
-            # # new_ed = time.time()
-            # # print(f'new time collapse: {new_ed- new_st}')
 
 
 
@@ -428,8 +364,6 @@ class CommSysInfo:
             best_xi_set.append(be_xi)
             spars_x_cur = np.linalg.pinv(np.hstack(best_xi_set)) @ whi_Y_M_vec
             sprs_x_est.append(spars_x_cur[-1, 0])
-            
-            # print(f'x est:{10*np.log10(abs(np.squeeze(np.array(sprs_x_est)))**2)+30}')
             whi_Y_M_vec_res = whi_Y_M_vec - np.hstack(best_xi_set) @ np.reshape(np.array(sprs_x_est), [-1, 1])
         
         
