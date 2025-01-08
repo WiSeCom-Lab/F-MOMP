@@ -1,0 +1,8 @@
+title: 'F-MOMP'
+repository-code: https://github.com/WiSeCom-Lab/F-MOMP.git
+date-released: 2024-12-12
+authors:
+  - given-names: Yun
+    family-names: Chen
+    affiliation: UC San Diego
+cff-version: 1.2.0
