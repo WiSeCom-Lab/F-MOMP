@@ -7,23 +7,23 @@ tqdm = partial(tqdm, position=0, leave=True)
 if __name__ == "__main__":
     
     for scene in [2]:
-    
-    #   # TODO: Parameters to be set
-        # scene = 1
+        # TODO: Parameters to be set
+        freq = 73 # in GHz
+        B = 1e9
         N_UE, N_AP, N_taps, Q, p_t_dBm = 12, 16, 32, 36, 45
         num_measurement = 40
         reconf_period = 4
-        
+        infoDir = f'{os.getcwd()}/data/ds{scene}/'
     #   # TODO: ends
         
             
-        commSys = CommSysInfo(
+        commSys = CommSysInfo( 
             # * Dataset related; track_T: tracking period; number samples to estimate (as each car has 4 arrays so 4x)
-            Scene = scene, track_T = 10e-3, traj_start=0, traj_pts = 150, arr_loc=np.array([[2.5, 0, 0], [-2.5, 0, 0], [0, -1, 0], [0, 1, 0]]),
+            Scene = scene, infoDir=infoDir, track_T = 10e-3, traj_start=0, traj_pts = 150, arr_loc=np.array([[2.5, 0, 0], [-2.5, 0, 0], [0, -1, 0], [0, 1, 0]]),
             # * Comm system hardware related; N_U/N_AP: #antenna elements; K: # taps
             link='up', N_RF_UE = 4, N_RF_AP = 4, N_UE=N_UE, N_AP=N_AP, K=N_taps, 
             # * Communication related
-            f_c = 73e9, B=1e9, T=15+273.1, c=299792458, p_t_dBm=p_t_dBm, Q=Q, 
+            f_c = freq*1e9, B=B, T=15+273.1, c=299792458, p_t_dBm=p_t_dBm, Q=Q, 
             # * Channel est/track related
             K_res=64, K_res_lr=2, N_est=5, # Channel est/track relate
         )
@@ -68,7 +68,7 @@ if __name__ == "__main__":
                 F_cb_inOne, W_cb_inOne, F_M_colIds,  W_M_colIds, Linv_M = commSys.cb_with_Linv(F_cb_list=F_cb, W_cb_list=W_cb, num_Mea=num_measurement)
                 
                 #! Receive signals: Now we have F_cb, W_cb, pair_mats (where all the pairs for each cb are given), and self.LLinv and we receive the signals (measurements)
-                Y_M, whi_Y_M, whi_WH_M, F_M = commSys.get_Y(F_cb_inOne, W_cb_inOne, F_M_colIds, W_M_colIds, Linv_M, H_taps)
+                Y_M, whi_Y_M, whi_WH_M, F_M, add_N = commSys.get_Y(F_cb_inOne, W_cb_inOne, F_M_colIds, W_M_colIds, Linv_M, H_taps)
 
                 #! F-MOMPp algorithms
                 # define dictionaries
@@ -92,7 +92,7 @@ if __name__ == "__main__":
                 # print(np.hstack([20*np.log10(all_est_paths[:, 1:2])+30, all_est_paths[:, 2:3], np.rad2deg(np.around(all_est_paths[:, 3:7], 4))]))
                 # print(np.hstack([rays.ray_info[:, np.array([2, 1, 3,4,5,6])]]))
                 # print()
-                getattr(tqdm, '_instances', {}).clear()
+                
             traj_chan_track['est_chan'] = np.stack(traj_chan_track['est_chan'], axis=2)
             traj_chan_track['col_names'] = col_names
             

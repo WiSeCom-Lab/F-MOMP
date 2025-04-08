@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 import scipy
+import scipy.linalg
 import scipy.stats as stats
 import scipy.io as sio
 import math
@@ -26,6 +27,7 @@ class CommSysInfo:
         #* Transmitted signal, precoders/combiners, channel geo information
         self.to_data_trajs()
         self.init_communication() # design transimitted signals, get noise level
+        # self.design_codebook(load=self.new_coders) # Though using random precoding, the codes are fixed for all the channels in the dataset; it gives self.F_UE, self.F_AP, and self.LLinv (for whitenting noises)
         
         
         
@@ -34,13 +36,13 @@ class CommSysInfo:
         set = f"ds{self.Scene}"
         self.set = set    
         # Load data
-        with open("data/{}/AP_pos.txt".format(set)) as f:
+        with open(f"{self.infoDir}/AP_pos.txt") as f:
             self.AP_pos = [[float(el) for el in line.split()] for line in f.read().split("\n")[1:-1]]
-        with open("data/{}/UE_pos.txt".format(set)) as f:
+        with open(f"{self.infoDir}/UE_pos.txt") as f:
             self.UE_pos = [[float(el) for el in line.split()] for line in f.read().split("\n")[1:-1]] # including all array positions ⚠ (not the strongest)
-        with open("data/{}/Info_selected.txt".format(set)) as f:
+        with open(f"{self.infoDir}/Info_selected.txt") as f:
             self.Rays = [pywarraychannels.em.Geometric([[float(p) for p in line.split()] for line in ue_block.split("\n")], bool_flip_RXTX=self.link=="up") for ue_block in f.read()[:-1].split("\n<ue>\n")]
-        self.true_num_inters = sio.loadmat(f'data/{set}/Num_inters.mat')
+        self.true_num_inters = sio.loadmat(f'{self.infoDir}/Num_inters.mat')
         self.arr_ori_compensate = np.array([0., -np.pi, np.pi/2, -np.pi/2]) # front, back, right, left arr orientation compensate, i.e., aoa/aod + self.arr_ori_compensate
         self.ori_AP = self.arr_ori_compensate[3] if np.squeeze(self.AP_pos)[1] <=-20. else self.arr_ori_compensate[2]
         self.p_max_chans = np.zeros([len(self.Rays) // 4, 2]).astype(np.int32) # maximal power among the 4 arrays
@@ -48,7 +50,13 @@ class CommSysInfo:
             chan_ids = np.arange(sim_id * 4, (sim_id+1) * 4)
             powers = [np.max(self.Rays[ii].ray_info[:, 2]) for ii in chan_ids]
             self.p_max_chans[sim_id, :] = np.argsort(powers)[-2:][::-1]
+        # self.Traj_simIDs = {'arr0': np.arange(0,len(self.p_max_chans))[self.p_max_chans%4==0], 'arr2': np.arange(0,len(self.p_max_chans))[self.p_max_chans%4==2], 'arr1': np.arange(0,len(self.p_max_chans))[self.p_max_chans%4==1]}
 
+        # for arr_id in [0, 1,2]:
+        #     ky = f'arr{arr_id}'
+        #     absChan_ids = self.p_max_chans[self.Traj_simIDs[ky]]
+        #     sio.savemat(f'./data_trajs/{set}_sim{absChan_ids[0]//4}-{absChan_ids[-1]//4}_{ky}.mat', {'absChan_ids': absChan_ids, 'Rays': [self.Rays[ii] for ii in absChan_ids], 'num_inters': self.true_num_inters['Num_inters'][absChan_ids, :], 'UE_pos': np.array(self.UE_pos)[absChan_ids, :], 'AP_pos': self.AP_pos[0]})    
+        
     def load_trajInfo(self, traj_file=None):
         self.traj_info = sio.loadmat(traj_file)
         pass
@@ -58,7 +66,7 @@ class CommSysInfo:
         Q = 2 ** np.ceil(np.log2(self.Q))
         self.p_t = np.power(10, (self.p_t_dBm-30)/10) # transimitted power
         self.p_n = k_B*self.T*self.B # noise power
-        print("Noise level: {:.2f}dBm".format(10*np.log10(self.p_n)+30))
+        # print("Noise level: {:.2f}dBm".format(10*np.log10(self.p_n)+30))
         self.N_s = np.min([self.N_RF_UE, self.N_RF_AP])
         # Pilot = np.concatenate([scipy.linalg.hadamard(Q)[:self.N_s], np.zeros((self.N_s, self.K//2))], axis=1)/np.sqrt(self.N_s)
         
@@ -69,7 +77,7 @@ class CommSysInfo:
         self.S_mat = S_mat
 
         
-    def design_codebook_perpath(self, Aaz_mid=0, Ael_mid=0, Daz_mid=0, Del_mid=0, num_beam_az=3, num_beam_el=3, ang_res=np.deg2rad(10)): #* angle_mid means the center of the sector for the precoder/combiners
+    def design_codebook_perpath(self, Aaz_mid=0, Ael_mid=0, Daz_mid=0, Del_mid=0, num_beam_az=3, num_beam_el=3, ang_res=np.deg2rad(10), randomBF = 0): #* angle_mid means the center of the sector for the precoder/combiners
         """_summary_
         All angles are in radians
         #! Actually ang resolution should be depending on number of antennaa elements with quantized phase shifters, but here for simplicity we use just a fixed degree
@@ -80,26 +88,33 @@ class CommSysInfo:
         W_ele = self.N_AP if self.link in 'up' else self.N_UE
         b_a, b_e = num_beam_az//2, num_beam_el//2
         
-        A_azs = Aaz_mid + np.arange(-b_a, b_a+1)*ang_res
-        A_els = Ael_mid + np.arange(-b_e, b_e+1)*ang_res
-        D_azs = Daz_mid + np.arange(-b_a, b_a+1)*ang_res
-        D_els = Del_mid + np.arange(-b_e, b_e+1)*ang_res
+        if randomBF:
+            F = np.exp(1j * np.pi * np.random.uniform(low=-1, high=1, size=(F_ele**2, 3)))
+            F = F[:, np.array([col_ii // 3 for col_ii in range(9)])]
+            W = np.exp(1j * np.pi * np.random.uniform(low=-1, high=1, size=(W_ele**2, 3)))
+            W = W[:, np.array([col_ii // 3 for col_ii in range(9)])]
+            
+        else:
+            A_azs = Aaz_mid + np.arange(-b_a, b_a+1)*ang_res
+            A_els = Ael_mid + np.arange(-b_e, b_e+1)*ang_res
+            D_azs = Daz_mid + np.arange(-b_a, b_a+1)*ang_res
+            D_els = Del_mid + np.arange(-b_e, b_e+1)*ang_res
+            
+            
+            W_prob_angs = np.kron(np.cos(A_els), np.sin(A_azs))*(-np.pi)
+            W_angs_x = np.linspace(np.min(W_prob_angs), np.max(W_prob_angs), num_beam_az)
+            W_angs_y = np.sin(A_els)*(-np.pi)
+            F_prob_angs = np.kron(np.cos(D_els), np.sin(D_azs))*(-np.pi)
+            F_angs_x = np.linspace(np.min(F_prob_angs), np.max(F_prob_angs), num_beam_az)
+            F_angs_y = np.sin(D_els)*(-np.pi)
+            
+            cb_Fx = np.exp(1j * F_angs_x[np.newaxis, :] * np.arange(F_ele)[:, np.newaxis])
+            cb_Fy = np.exp(1j * F_angs_y[np.newaxis, :] * np.arange(F_ele)[:, np.newaxis])
+            cb_Wx = np.exp(1j * W_angs_x[np.newaxis, :] * np.arange(W_ele)[:, np.newaxis])
+            cb_Wy = np.exp(1j * W_angs_y[np.newaxis, :] * np.arange(W_ele)[:, np.newaxis])
         
-        
-        W_prob_angs = np.kron(np.cos(A_els), np.sin(A_azs))*(-np.pi)
-        W_angs_x = np.linspace(np.min(W_prob_angs), np.max(W_prob_angs), num_beam_az)
-        W_angs_y = np.sin(A_els)*(-np.pi)
-        F_prob_angs = np.kron(np.cos(D_els), np.sin(D_azs))*(-np.pi)
-        F_angs_x = np.linspace(np.min(F_prob_angs), np.max(F_prob_angs), num_beam_az)
-        F_angs_y = np.sin(D_els)*(-np.pi)
-        
-        cb_Fx = np.exp(1j * F_angs_x[np.newaxis, :] * np.arange(F_ele)[:, np.newaxis])
-        cb_Fy = np.exp(1j * F_angs_y[np.newaxis, :] * np.arange(F_ele)[:, np.newaxis])
-        cb_Wx = np.exp(1j * W_angs_x[np.newaxis, :] * np.arange(W_ele)[:, np.newaxis])
-        cb_Wy = np.exp(1j * W_angs_y[np.newaxis, :] * np.arange(W_ele)[:, np.newaxis])
-        
-        F = np.kron(cb_Fx, cb_Fy) # whole codebook
-        W = np.kron(cb_Wx, cb_Wy)
+            F = np.kron(cb_Fx, cb_Fy) # whole codebook
+            W = np.kron(cb_Wx, cb_Wy)
         num_FW_comb = F.shape[1]*W.shape[1]
         FW_pair_id = np.zeros([2, num_FW_comb])
         for Fi in range(F.shape[1]):
@@ -107,32 +122,65 @@ class CommSysInfo:
             FW_pair_id[1, Fi*W.shape[1]: (Fi+1)*W.shape[1]] = np.arange(0, W.shape[1])
         return F, W
     
+
+    
     def cb_with_Linv(self, F_cb_list, W_cb_list, num_Mea = 40): # whiten noises
         F_cb_inOne = np.concatenate(F_cb_list, axis=1)
         W_cb_inOne = np.concatenate(W_cb_list, axis=1)
         F_M_colIds, W_M_colIds, Linv_M = [], [], []
         F_cb_numCol, W_cb_numCol = F_cb_list[0].shape[1], W_cb_list[0].shape[1]
         for n_est in range(self.N_est):
-            for m in range(num_Mea//self.N_est):
-                F_sel_nums, W_sel_nums = range(n_est*F_cb_numCol, (n_est+1)*F_cb_numCol), range(n_est*W_cb_numCol, (n_est+1)*F_cb_numCol)
+            m_counts = num_Mea//self.N_est if n_est < self.N_est-1 else int(num_Mea-num_Mea//self.N_est*(self.N_est-1))
+            for m in range(m_counts):
+                
+                F_sel_nums, W_sel_nums = range(n_est*F_cb_numCol, (n_est+1)*F_cb_numCol), range(n_est*W_cb_numCol, (n_est+1)*W_cb_numCol)
                 F_m_cols = np.random.choice(F_sel_nums, size=self.N_s, replace=0)
                 W_m_cols = np.random.choice(W_sel_nums, size=self.N_s, replace=0)
                 W_m = W_cb_inOne[:, W_m_cols]
                 try:
                     L = np.linalg.cholesky(W_m.conj().T @ W_m)
                 except:
-                    continue
+                    L = np.eye(W_m.shape[1])
                 Linv = np.linalg.inv(L)
                 Linv_M.append(Linv)
                 
                 F_M_colIds.append(F_m_cols)
                 W_M_colIds.append(W_m_cols)
                 
-            
+        if len(F_M_colIds) < 1:
+            print(L)
             
         return F_cb_inOne, W_cb_inOne, F_M_colIds,  W_M_colIds, Linv_M
         
         
+        
+        # nDataStream=np.min([self.N_RF_UE, self.N_RF_AP])
+        # self.N_s = nDataStream
+        # num_FW_comb = np.sum([pair_mat.shape[1] for pair_mat in pair_mat_list])
+        # addNum_FW_comb = int(np.ceil(num_FW_comb/nDataStream)*nDataStream-num_FW_comb) # number of additional FW pairs to satisfy Ns transmissions
+        # if addNum_FW_comb != 0 :
+        #     FW_add_pair_ids = np.zeros([2, addNum_FW_comb])
+        #     FW_add_pair_ids[0, : ] = np.array(rdm.sample(range(int(pair_mat_list[-1][0, -1])), addNum_FW_comb)) # can't have same indexes in the last nDataStream 
+        #     FW_add_pair_ids[1, : ] = np.array(rdm.sample(range(int(pair_mat_list[-1][1, -1])), addNum_FW_comb))
+        #     pair_mat_list[-1] = np.concatenate([pair_mat_list[-1], FW_add_pair_ids], axis=1)
+            
+        # for cb_i in range(len(F_cb_list)):
+        #     pair_mat_list[cb_i] = np.concatenate([np.ones([1, pair_mat_list[cb_i].shape[1]])*cb_i, pair_mat_list[cb_i]], axis=0)
+        # pair_mats = np.concatenate(pair_mat_list, axis=1)
+        
+        # Linv = []
+        # for Linv_ii in range(pair_mats.shape[1]//nDataStream):
+        #     W_now = np.array([W_cb_list[int(pair_mats[0, ii])][:, int(pair_mats[2, ii])] for ii in np.arange(Linv_ii*nDataStream, (Linv_ii+1)*nDataStream)]).T
+        #     WHW = np.dot(W_now.conj().T, W_now)
+        #     try:
+        #         L_now = np.linalg.cholesky(WHW)
+        #     except:
+        #         L_now = np.eye(WHW.shape[1])
+        #     Linv_now = np.linalg.inv(L_now)
+        #     Linv.append(Linv_now) 
+        
+        
+        # print()
     
     def build_chan(self, rays, arr_id):
         paths_info = rays.ray_info # UL: 0 phase, 1 tau, 2 power, 3 doa_az, 4 doa_el, 5 dod_az, 6 dod_el
@@ -147,6 +195,13 @@ class CommSysInfo:
         tau_min = np.min(paths_info[:, 1])
         tdoa = paths_info[:, 1] - tau_min
         t_response = self.rcosfilter(num_taps=self.K, delays=tdoa, beta=0.2)
+        # plt.figure()
+        # plt.plot(np.arange(0,self.K)*1/self.B, t_response[:, 0], 'o-')
+        # plt.plot(np.arange(0,self.K)*1/self.B, t_response[:, 4], 's-')
+        # plt.plot(np.arange(0,self.K)*1/self.B, t_response[:, 8], 's-')
+        # plt.show()
+        
+        # response_time = self.filter.response(len(self.K), paths_info[:,1]-tau_min)
         complex_gain = np.sqrt(np.power(10, (paths_info[:, 2]-30)/10)) * np.exp(1j*phase)
         arrival_mat, departure_mat = [], []
         for path_id in range(len(tdoa)):
@@ -217,14 +272,14 @@ class CommSysInfo:
             F_M.append(F_use)
         
         
-        return Y_M, whi_Y_M, whi_WH_M, F_M
+        return Y_M, whi_Y_M, whi_WH_M, F_M, add_N
         
 
 
 
             
     
-    def F_MOMP(self, Y_M, whi_Y_M, whi_WH_M, F_M, Linv_M, Aaz_mids, Ael_mids, Daz_mids, Del_mids, t_mids, dic_ang_rslu=np.deg2rad(0.25), srch_grid = 8, N_iter = 4):
+    def F_MOMP(self, Y_M, whi_Y_M, whi_WH_M, F_M, Linv_M, Aaz_mids, Ael_mids, Daz_mids, Del_mids, t_mids, dic_ang_rslu=np.deg2rad(0.25), srch_grid = 8, N_iter = 4, extra_path_start=5, ini_sear_config=[np.deg2rad(0.5), 60]):
 
         
         whi_Y_M_vec = np.expand_dims(np.hstack([np.expand_dims(whi_Y_M[ii].flatten(order='F'), axis=1) for ii in range(len(Y_M))]).flatten(order='F'), axis=1)
@@ -244,7 +299,9 @@ class CommSysInfo:
         sprs_x_est = []
         for n_est in range(self.N_est): # loop for N_est
             #* for delay values
-            delay_grids = t_mids[n_est] + np.arange(-srch_grid, srch_grid+1)*2.5e-10
+            if n_est >= extra_path_start:
+                srch_grid, dic_ang_rslu = ini_sear_config[1], ini_sear_config[0]
+            delay_grids = t_mids[n_est] + np.arange(-srch_grid, srch_grid+1)*0.25/self.B
             # delay_grids = delay_grids[delay_grids>=0]
             psi_t_temp = self.rcosfilter(num_taps=self.K, delays=delay_grids, beta=0.2)
             # psi_t.append(psi_t_temp)
@@ -338,19 +395,16 @@ class CommSysInfo:
             est_Dsprl = Dsprl_grids[sup[1]]
             phi_sprl = est_Dsprl/np.cos(est_Dele)
             phi_sprl = phi_sprl if abs(phi_sprl)<1. else np.sign(phi_sprl)*0.9999
-            est_Daz = np.arcsin(phi_sprl)
-            if abs(Daz_mids[n_est] - est_Daz) > np.deg2rad(8):
-                est_Daz = np.pi - est_Daz
-                est_Daz = (est_Daz + np.pi) % (2 * np.pi) - np.pi # wrap to [-pi, pi]
+            est_Daz = np.arcsin(phi_sprl) if np.cos(Daz_mids[n_est]) > 0 else np.pi-np.arcsin(phi_sprl)
+            est_Daz = (est_Daz + np.pi) % (2 * np.pi) - np.pi # wrap to [-pi, pi]
+            
             est_Abot = Abot_grids[sup[4]]
             est_Aele = np.arcsin(est_Abot)
             est_Asprl = Asprl_grids[sup[3]]
             theta_sprl = est_Asprl/np.cos(est_Aele)
             theta_sprl = theta_sprl if abs(theta_sprl)<1. else np.sign(theta_sprl) * 0.9999
-            est_Aaz = np.arcsin(theta_sprl)
-            if abs(Aaz_mids[n_est] - est_Aaz) > np.deg2rad(8):
-                est_Aaz = np.pi-est_Aaz
-                est_Aaz = (est_Aaz + np.pi) % (2 * np.pi) - np.pi # wrap to [-pi, pi]
+            est_Aaz = np.arcsin(theta_sprl) if np.cos(Aaz_mids[n_est]) > 0 else np.pi-np.arcsin(theta_sprl)
+            est_Aaz = (est_Aaz + np.pi) % (2 * np.pi) - np.pi # wrap to [-pi, pi]
             ChanGeo_ests[f'{n_est}'] = np.array([est_t, est_Aaz, est_Aele, est_Daz, est_Dele])
 
             
@@ -364,6 +418,8 @@ class CommSysInfo:
             best_xi_set.append(be_xi)
             spars_x_cur = np.linalg.pinv(np.hstack(best_xi_set)) @ whi_Y_M_vec
             sprs_x_est.append(spars_x_cur[-1, 0])
+            
+            # print(f'x est:{10*np.log10(abs(np.squeeze(np.array(sprs_x_est)))**2)+30}')
             whi_Y_M_vec_res = whi_Y_M_vec - np.hstack(best_xi_set) @ np.reshape(np.array(sprs_x_est), [-1, 1])
         
         
